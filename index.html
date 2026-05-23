@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>P2P Text Messenger</title>
+    <!-- Using Tailwind CSS for layout, strictly limited to Black & White -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- PeerJS for Peer-to-Peer connection without a custom backend -->
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <style>
+        /* Ensuring strict black and white aesthetics with a monospaced font */
+        body {
+            font-family: 'Courier New', Courier, monospace;
+            background-color: #ffffff;
+            color: #000000;
+        }
+        
+        /* Custom scrollbar for chat box (B&W) */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #ffffff;
+            border-left: 2px solid #000000;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #000000;
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col p-4 md:p-8 max-w-4xl mx-auto selection:bg-black selection:text-white">
+
+    <!-- Header -->
+    <header class="border-b-4 border-black pb-4 mb-6">
+        <h1 class="text-3xl font-bold uppercase tracking-wider">Direct Connect</h1>
+        <p class="text-sm mt-2 font-bold">P2P Messaging System</p>
+    </header>
+
+    <!-- Connection Setup Section -->
+    <section class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+        
+        <!-- My Device Info -->
+        <div class="border-2 border-black p-4 flex flex-col justify-between">
+            <div>
+                <h2 class="text-xl font-bold uppercase border-b-2 border-black pb-2 mb-4">Your Device</h2>
+                <p class="mb-2">Your ID:</p>
+                <div class="flex">
+                    <input type="text" id="my-id" readonly class="w-full border-2 border-black p-2 bg-white text-black outline-none font-bold" value="Generating...">
+                    <button onclick="copyMyId()" class="ml-2 border-2 border-black px-4 py-2 hover:bg-black hover:text-white transition-colors font-bold uppercase">Copy</button>
+                </div>
+            </div>
+            <div class="mt-4">
+                <span id="status-indicator" class="inline-block w-3 h-3 bg-white border-2 border-black rounded-full mr-2"></span>
+                <span id="status-text" class="font-bold uppercase text-sm">Disconnected</span>
+            </div>
+        </div>
+
+        <!-- Connect to Target Device -->
+        <div class="border-2 border-black p-4">
+            <h2 class="text-xl font-bold uppercase border-b-2 border-black pb-2 mb-4">Connect To</h2>
+            <p class="mb-2">Enter Target ID:</p>
+            <input type="text" id="target-id" class="w-full border-2 border-black p-2 mb-4 outline-none focus:ring-2 focus:ring-black focus:ring-offset-2" placeholder="Paste ID here...">
+            <button id="connect-btn" class="w-full border-2 border-black p-3 hover:bg-black hover:text-white transition-colors font-bold uppercase tracking-wider">Connect</button>
+        </div>
+        
+    </section>
+
+    <!-- Chat Section -->
+    <section class="flex-grow flex flex-col border-2 border-black overflow-hidden relative">
+        <div class="bg-black text-white p-2 text-center font-bold uppercase border-b-2 border-black">
+            Secure Data Channel
+        </div>
+        
+        <!-- Chat Log -->
+        <div id="chat-log" class="flex-grow p-4 overflow-y-auto bg-white flex flex-col gap-3 min-h-[300px]">
+            <div class="text-center text-sm border border-black py-1 px-4 self-center uppercase font-bold">
+                Waiting for connection...
+            </div>
+        </div>
+
+        <!-- Message Input -->
+        <div class="border-t-2 border-black p-4 flex bg-white">
+            <input type="text" id="msg-input" disabled class="flex-grow border-2 border-black p-3 outline-none focus:ring-2 focus:ring-black disabled:opacity-50 disabled:cursor-not-allowed" placeholder="Type a message...">
+            <button id="send-btn" disabled class="ml-4 border-2 border-black px-6 py-3 hover:bg-black hover:text-white transition-colors font-bold uppercase disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-white disabled:hover:text-black">Send</button>
+        </div>
+    </section>
+
+    <script>
+        // DOM Elements
+        const myIdInput = document.getElementById('my-id');
+        const targetIdInput = document.getElementById('target-id');
+        const connectBtn = document.getElementById('connect-btn');
+        const statusIndicator = document.getElementById('status-indicator');
+        const statusText = document.getElementById('status-text');
+        const chatLog = document.getElementById('chat-log');
+        const msgInput = document.getElementById('msg-input');
+        const sendBtn = document.getElementById('send-btn');
+
+        // PeerJS Setup
+        let peer = null;
+        let conn = null;
+
+        // Initialize Peer
+        function initializePeer() {
+            // Generates a random ID automatically
+            peer = new Peer({
+                debug: 2
+            });
+
+            peer.on('open', (id) => {
+                myIdInput.value = id;
+                console.log('My peer ID is: ' + id);
+            });
+
+            // Listen for incoming connections
+            peer.on('connection', (connection) => {
+                // If we already have a connection, close the new one
+                if (conn && conn.open) {
+                    connection.on('open', () => {
+                        connection.send('Device is already connected to someone else.');
+                        setTimeout(() => connection.close(), 500);
+                    });
+                    return;
+                }
+
+                conn = connection;
+                setupConnectionStatus();
+            });
+
+            peer.on('error', (err) => {
+                console.error(err);
+                appendSystemMessage('Error: ' + err.type);
+            });
+        }
+
+        function setupConnectionStatus() {
+            conn.on('open', () => {
+                updateUIConnected();
+                chatLog.innerHTML = ''; // Clear waiting message
+                appendSystemMessage('Connection established with: ' + conn.peer);
+            });
+
+            // Handle incoming data
+            conn.on('data', (data) => {
+                appendMessage(data, 'remote');
+            });
+
+            conn.on('close', () => {
+                updateUIDisconnected();
+                appendSystemMessage('Connection closed.');
+                conn = null;
+            });
+            
+            conn.on('error', (err) => {
+                appendSystemMessage('Connection Error: ' + err);
+            });
+        }
+
+        // Connect to a remote ID
+        connectBtn.addEventListener('click', () => {
+            const targetId = targetIdInput.value.trim();
+            if (!targetId) {
+                alert('Please enter a Target ID');
+                return;
+            }
+            if (targetId === myIdInput.value) {
+                alert('You cannot connect to yourself.');
+                return;
+            }
+
+            appendSystemMessage('Connecting to ' + targetId + '...');
+            conn = peer.connect(targetId);
+            setupConnectionStatus();
+        });
+
+        // Send Message
+        function sendMessage() {
+            const msg = msgInput.value.trim();
+            if (msg && conn && conn.open) {
+                conn.send(msg);
+                appendMessage(msg, 'local');
+                msgInput.value = '';
+                msgInput.focus();
+            }
+        }
+
+        sendBtn.addEventListener('click', sendMessage);
+        msgInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') sendMessage();
+        });
+
+        // UI Helpers
+        function updateUIConnected() {
+            statusIndicator.classList.remove('bg-white');
+            statusIndicator.classList.add('bg-black');
+            statusText.innerText = 'Connected';
+            msgInput.disabled = false;
+            sendBtn.disabled = false;
+            connectBtn.disabled = true;
+            targetIdInput.disabled = true;
+        }
+
+        function updateUIDisconnected() {
+            statusIndicator.classList.remove('bg-black');
+            statusIndicator.classList.add('bg-white');
+            statusText.innerText = 'Disconnected';
+            msgInput.disabled = true;
+            sendBtn.disabled = true;
+            connectBtn.disabled = false;
+            targetIdInput.disabled = false;
+        }
+
+        function appendMessage(text, sender) {
+            const msgDiv = document.createElement('div');
+            msgDiv.classList.add('max-w-[80%]', 'p-3', 'border-2', 'border-black', 'break-words', 'font-bold');
+            
+            if (sender === 'local') {
+                msgDiv.classList.add('self-end', 'bg-black', 'text-white');
+            } else {
+                msgDiv.classList.add('self-start', 'bg-white', 'text-black');
+            }
+            
+            msgDiv.innerText = text;
+            chatLog.appendChild(msgDiv);
+            chatLog.scrollTop = chatLog.scrollHeight; // Auto-scroll
+        }
+
+        function appendSystemMessage(text) {
+            const sysDiv = document.createElement('div');
+            sysDiv.classList.add('self-center', 'text-sm', 'border', 'border-black', 'py-1', 'px-4', 'uppercase', 'font-bold', 'mt-2', 'mb-2');
+            sysDiv.innerText = text;
+            chatLog.appendChild(sysDiv);
+            chatLog.scrollTop = chatLog.scrollHeight;
+        }
+
+        // Copy ID to clipboard fallback
+        function copyMyId() {
+            myIdInput.select();
+            myIdInput.setSelectionRange(0, 99999); /* For mobile devices */
+            try {
+                document.execCommand("copy");
+                appendSystemMessage("ID copied to clipboard!");
+            } catch (err) {
+                appendSystemMessage("Failed to copy ID.");
+            }
+        }
+
+        // Boot up
+        window.onload = () => {
+            initializePeer();
+        };
+    </script>
+</body>
+</html>
