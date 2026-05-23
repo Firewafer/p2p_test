@@ -68,8 +68,9 @@
 
     <!-- Chat Section -->
     <section class="flex-grow flex flex-col border-2 border-black overflow-hidden relative">
-        <div class="bg-black text-white p-2 text-center font-bold uppercase border-b-2 border-black">
-            Secure Data Channel
+        <div class="bg-black text-white p-2 flex justify-between items-center font-bold uppercase border-b-2 border-black">
+            <span>Secure Data Channel</span>
+            <button id="clear-btn" class="text-xs bg-white text-black px-2 py-1 hover:bg-gray-200 transition-colors uppercase font-bold border border-white focus:outline-none">Clear</button>
         </div>
         
         <!-- Chat Log -->
@@ -96,54 +97,91 @@
         const chatLog = document.getElementById('chat-log');
         const msgInput = document.getElementById('msg-input');
         const sendBtn = document.getElementById('send-btn');
+        const clearBtn = document.getElementById('clear-btn');
 
-        // PeerJS Setup
+        // State & Storage
         let peer = null;
         let conn = null;
+        let chatHistory = JSON.parse(localStorage.getItem('p2p_chat_history')) || [];
+        
+        // Load last target ID if available to save typing
+        const lastTarget = localStorage.getItem('p2p_last_target');
+        if (lastTarget) {
+            targetIdInput.value = lastTarget;
+        }
+
+        // Generate a short 5-character ID (omitting confusing characters like O, 0, I, 1)
+        function generateShortId() {
+            const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; 
+            let result = '';
+            for (let i = 0; i < 5; i++) {
+                result += chars.charAt(Math.floor(Math.random() * chars.length));
+            }
+            return result;
+        }
+
+        // Get stored ID from memory, or create a new one
+        let myCustomId = localStorage.getItem('p2p_my_id');
+        if (!myCustomId) {
+            myCustomId = generateShortId();
+            localStorage.setItem('p2p_my_id', myCustomId);
+        }
 
         // Initialize Peer
         function initializePeer() {
-            // Generates a random ID automatically
-            peer = new Peer({
+            // Force the custom short ID
+            peer = new Peer(myCustomId, {
                 debug: 2
             });
 
             peer.on('open', (id) => {
                 myIdInput.value = id;
                 console.log('My peer ID is: ' + id);
+                renderChatHistory(); // Load saved history when ready
             });
 
             // Listen for incoming connections
             peer.on('connection', (connection) => {
-                // If we already have a connection, close the new one
                 if (conn && conn.open) {
                     connection.on('open', () => {
-                        connection.send('Device is already connected to someone else.');
+                        connection.send('[SYSTEM] Device is already connected to someone else.');
                         setTimeout(() => connection.close(), 500);
                     });
                     return;
                 }
-
                 conn = connection;
                 setupConnectionStatus();
             });
 
             peer.on('error', (err) => {
                 console.error(err);
-                appendSystemMessage('Error: ' + err.type);
+                if (err.type === 'unavailable-id') {
+                    // In the rare case our stored short ID is taken globally, generate a new one
+                    myCustomId = generateShortId();
+                    localStorage.setItem('p2p_my_id', myCustomId);
+                    initializePeer();
+                } else {
+                    appendSystemMessage('Error: ' + err.type);
+                }
             });
         }
 
         function setupConnectionStatus() {
             conn.on('open', () => {
                 updateUIConnected();
-                chatLog.innerHTML = ''; // Clear waiting message
+                // Save this target so we remember them next time we refresh
+                localStorage.setItem('p2p_last_target', conn.peer);
+                targetIdInput.value = conn.peer;
                 appendSystemMessage('Connection established with: ' + conn.peer);
             });
 
             // Handle incoming data
             conn.on('data', (data) => {
-                appendMessage(data, 'remote');
+                if(typeof data === 'string' && data.startsWith('[SYSTEM]')) {
+                     appendSystemMessage(data.replace('[SYSTEM] ', ''));
+                } else {
+                     appendMessage(data, 'remote', true);
+                }
             });
 
             conn.on('close', () => {
@@ -159,13 +197,15 @@
 
         // Connect to a remote ID
         connectBtn.addEventListener('click', () => {
-            const targetId = targetIdInput.value.trim();
+            const targetId = targetIdInput.value.trim().toUpperCase(); // Ensure uppercase
+            targetIdInput.value = targetId;
+
             if (!targetId) {
-                alert('Please enter a Target ID');
+                appendSystemMessage('Please enter a Target ID');
                 return;
             }
             if (targetId === myIdInput.value) {
-                alert('You cannot connect to yourself.');
+                appendSystemMessage('You cannot connect to yourself.');
                 return;
             }
 
@@ -179,15 +219,25 @@
             const msg = msgInput.value.trim();
             if (msg && conn && conn.open) {
                 conn.send(msg);
-                appendMessage(msg, 'local');
+                appendMessage(msg, 'local', true);
                 msgInput.value = '';
                 msgInput.focus();
+            } else if (!conn || !conn.open) {
+                 appendSystemMessage('Cannot send: Not connected.');
             }
         }
 
         sendBtn.addEventListener('click', sendMessage);
         msgInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter') sendMessage();
+        });
+
+        // Clear Chat History functionality
+        clearBtn.addEventListener('click', () => {
+            chatHistory = [];
+            localStorage.removeItem('p2p_chat_history');
+            chatLog.innerHTML = '';
+            appendSystemMessage('Chat history cleared.');
         });
 
         // UI Helpers
@@ -211,7 +261,35 @@
             targetIdInput.disabled = false;
         }
 
-        function appendMessage(text, sender) {
+        function renderChatHistory() {
+            chatLog.innerHTML = ''; // clear default waiting message
+            if (chatHistory.length === 0) {
+                appendSystemMessage('Waiting for connection...');
+            } else {
+                chatHistory.forEach(msg => {
+                    appendMessageToDOM(msg.text, msg.sender);
+                });
+                appendSystemMessage('Loaded previous chat history.');
+            }
+        }
+
+        function appendMessage(text, sender, saveToHistory = false) {
+            appendMessageToDOM(text, sender);
+            
+            // Save to localStorage so it survives refresh
+            if (saveToHistory) {
+                chatHistory.push({ text, sender });
+                localStorage.setItem('p2p_chat_history', JSON.stringify(chatHistory));
+            }
+        }
+
+        function appendMessageToDOM(text, sender) {
+            // Remove the initial "waiting" message if it exists
+            const waitingMsg = chatLog.querySelector('.uppercase');
+            if (waitingMsg && waitingMsg.innerText.includes('WAITING FOR CONNECTION')) {
+                waitingMsg.remove();
+            }
+
             const msgDiv = document.createElement('div');
             msgDiv.classList.add('max-w-[80%]', 'p-3', 'border-2', 'border-black', 'break-words', 'font-bold');
             
@@ -228,16 +306,16 @@
 
         function appendSystemMessage(text) {
             const sysDiv = document.createElement('div');
-            sysDiv.classList.add('self-center', 'text-sm', 'border', 'border-black', 'py-1', 'px-4', 'uppercase', 'font-bold', 'mt-2', 'mb-2');
+            sysDiv.classList.add('self-center', 'text-sm', 'border', 'border-black', 'py-1', 'px-4', 'uppercase', 'font-bold', 'mt-2', 'mb-2', 'text-center');
             sysDiv.innerText = text;
             chatLog.appendChild(sysDiv);
             chatLog.scrollTop = chatLog.scrollHeight;
         }
 
-        // Copy ID to clipboard fallback
+        // Copy ID to clipboard
         function copyMyId() {
             myIdInput.select();
-            myIdInput.setSelectionRange(0, 99999); /* For mobile devices */
+            myIdInput.setSelectionRange(0, 99999);
             try {
                 document.execCommand("copy");
                 appendSystemMessage("ID copied to clipboard!");
